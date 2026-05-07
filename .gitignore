@@ -27,3 +27,6 @@ pnpm-debug.log*
 
 # astro
 .astro/
+
+# Ignore uploaded files
+public/screenshots/*

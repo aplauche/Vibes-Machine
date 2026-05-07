@@ -18,7 +18,7 @@ const items = fs
     const stat = fs.statSync(path.join(SCREENSHOTS_DIR, name));
     return {
       name,
-      src: `/screenshots/${encodeURIComponent(name)}`,
+      src: `/api/img/${encodeURIComponent(name)}`,
       mtime: stat.mtimeMs,
     };
   })
@@ -30,7 +30,7 @@ const items = fs
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vibes</title>
+    <title>vibes machine</title>
     <style>
       :root {
         color-scheme: dark;
@@ -120,6 +120,7 @@ const items = fs
       @media (max-width: 420px)  { .grid { column-count: 1; } }
 
       .grid figure {
+        position: relative;
         margin: 0 0 var(--gap);
         break-inside: avoid;
         border-radius: 8px;
@@ -137,6 +138,28 @@ const items = fs
         width: 100%;
         height: auto;
       }
+      .grid .del {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 120ms ease, background 120ms ease;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+      .grid figure:hover .del { opacity: 1; }
+      .grid .del:hover { background: #fb4934; }
 
       .modal {
         position: fixed;
@@ -205,7 +228,7 @@ const items = fs
   </head>
   <body>
     <header>
-      <h1>vibes</h1>
+      <h1>vibes machine</h1>
       <span class="count" id="count">{items.length} {items.length === 1 ? 'image' : 'images'}</span>
       <div class="paste-zone" id="paste-zone" tabindex="0" contenteditable="true" spellcheck="false" aria-label="Paste image from clipboard">
         paste image here <kbd>⌘V</kbd>
@@ -218,8 +241,9 @@ const items = fs
     </div>
     <div class="grid" id="grid">
       {items.map((item, i) => (
-        <figure data-index={i}>
+        <figure data-index={i} data-name={item.name}>
           <img src={item.src} alt={item.name} loading="lazy" />
+          <button class="del" type="button" aria-label="Delete">&times;</button>
         </figure>
       ))}
     </div>
@@ -257,12 +281,35 @@ const items = fs
       function prependItem(item) {
         state.items.unshift(item);
         const fig = document.createElement('figure');
+        fig.dataset.name = item.name;
         const img = document.createElement('img');
         img.src = item.src;
         img.alt = item.name;
         img.loading = 'lazy';
         fig.appendChild(img);
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'del';
+        del.setAttribute('aria-label', 'Delete');
+        del.innerHTML = '&times;';
+        fig.appendChild(del);
         grid.insertBefore(fig, grid.firstChild);
+        rebuildIndices();
+        updateCount();
+      }
+
+      async function deleteItem(fig) {
+        const name = fig.dataset.name;
+        if (!name) return;
+        if (!confirm(`Delete ${name}?`)) return;
+        const res = await fetch(`/api/img/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!res.ok) {
+          alert('delete failed');
+          return;
+        }
+        const idx = state.items.findIndex((it) => it.name === name);
+        if (idx >= 0) state.items.splice(idx, 1);
+        fig.remove();
         rebuildIndices();
         updateCount();
       }
@@ -286,6 +333,12 @@ const items = fs
       function prev() { open(current - 1); }
 
       grid.addEventListener('click', (e) => {
+        if (e.target.classList && e.target.classList.contains('del')) {
+          e.stopPropagation();
+          const fig = e.target.closest('figure[data-name]');
+          if (fig) deleteItem(fig);
+          return;
+        }
         const fig = e.target.closest('figure[data-index]');
         if (fig) open(parseInt(fig.dataset.index, 10));
       });
@@ -342,9 +395,13 @@ const items = fs
             const blob = item.getAsFile();
             if (!blob) continue;
             try {
-              const result = await uploadBlob(blob);
-              prependItem(result);
+              await uploadBlob(blob);
+              // Optimistic prepend disabled: Vite's public-folder watcher races
+              // with it in dev, and the reload below re-runs SSR so the new file
+              // shows up via the same path as a cold load.
+              // prependItem(result);
               setStatus('ok', 'added ✓');
+              setTimeout(() => window.location.reload(), 400);
             } catch (err) {
               setStatus('err', err.message || 'failed');
             }

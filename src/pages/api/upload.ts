@@ -52,7 +52,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     return json({
       name,
-      src: `/screenshots/${encodeURIComponent(name)}`,
+      src: `/api/img/${encodeURIComponent(name)}`,
     });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
