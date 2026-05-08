@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' file:; img-src file: data: 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>vibes machine</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>vibes machine</h1>
+      <span class="count" id="count">0 images</span>
+      <div class="paste-zone" id="paste-zone" tabindex="0" contenteditable="true" spellcheck="false" aria-label="Paste image from clipboard">
+        paste image here <kbd>⌘V</kbd>
+      </div>
+      <button class="cog" id="cog" type="button" aria-label="Choose screenshots folder" title="Choose screenshots folder">⚙</button>
+    </header>
+
+    <div class="empty" id="empty">
+      no screenshots yet.<br />
+      paste an image above, or drop files into the screenshots folder.
+    </div>
+    <div class="grid" id="grid"></div>
+
+    <div class="modal" id="modal" aria-hidden="true">
+      <button class="close" aria-label="Close">&times;</button>
+      <button class="nav prev" aria-label="Previous">&#8249;</button>
+      <img id="modal-img" alt="" />
+      <button class="nav next" aria-label="Next">&#8250;</button>
+      <div class="caption" id="modal-caption"></div>
+    </div>
+
+    <div class="statusbar" id="statusbar" role="status" aria-live="polite"></div>
+
+    <script src="main.js"></script>
+  </body>
+</html>

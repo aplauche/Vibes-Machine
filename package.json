@@ -1,16 +1,12 @@
 {
   "name": "vibes-machine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "type": "module",
+  "main": "main.js",
   "scripts": {
-    "dev": "astro dev",
-    "start": "astro dev",
-    "build": "astro build",
-    "preview": "astro preview"
+    "start": "electron ."
   },
-  "dependencies": {
-    "@astrojs/node": "^9.5.5",
-    "astro": "^5.0.0"
+  "devDependencies": {
+    "electron": "^33.0.0"
   }
 }

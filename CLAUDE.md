@@ -6,44 +6,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Command | What it does |
 | --- | --- |
-| `npm run dev` | Astro dev server at http://127.0.0.1:4321 |
-| `npm run build` | Production build into `dist/` |
-| `npm run preview` | Serve the production build |
-| `node ./dist/server/entry.mjs` | Run the built server directly. `PORT=4322` to override |
+| `npm start` | Launch the Electron app (`electron .`) |
 
-There is no test runner, linter, or formatter configured.
+There is no build step, no test runner, no linter. The app is plain JavaScript loaded directly by Electron.
+
+To work on the legacy Astro version (preserved for reference): `cd legacy && npm i && npm run dev`.
 
 ## Architecture
 
-Astro 5 in **SSR mode** (`output: 'server'`) with the `@astrojs/node` standalone adapter. The whole app is three files:
+A minimal Electron app — six files, one runtime dependency (`electron`). The renderer is loaded via `loadFile`, so the renderer's origin is `file://` and `<img src="file:///…">` works natively without a custom protocol or CSP gymnastics.
 
-- [src/pages/index.astro](src/pages/index.astro) — server-renders the masonry grid by `readdirSync`-ing the screenshots directory on every request, sorted by mtime desc. Inline `<script is:inline>` handles the modal viewer, paste-to-upload, and delete. No bundler/framework on the client.
-- [src/pages/api/upload.ts](src/pages/api/upload.ts) — `POST /api/upload`, multipart form field `image`, max 25 MB, writes `paste-<iso-ts>-<rand4>.<ext>` to the screenshots dir.
-- [src/pages/api/img/[name].ts](src/pages/api/img/[name].ts) — `GET` and `DELETE` for individual files. GET sets `Cache-Control: public, max-age=31536000, immutable`.
+- [main.js](main.js) — main process. Owns the screenshots directory, IPC handlers (`vibes:list/save/delete/reveal/settings.*`), `fs.watch` with 75 ms debounce broadcasting `vibes:changed`, settings persistence, BrowserWindow creation.
+- [preload.js](preload.js) — `contextBridge.exposeInMainWorld('vibes', { list, save, delete, reveal, settings, onChanged })`. Sandbox-safe, CommonJS, no Node API leakage to renderer.
+- [renderer/index.html](renderer/index.html) — body shell with paste-zone, grid, modal. Strict CSP (`script-src 'self'`, `img-src file: data: 'self'`).
+- [renderer/main.js](renderer/main.js) — DOM event wiring, `state.items` source-of-truth model, modal/keyboard nav, paste-to-upload with optimistic prepend, `vibes.onChanged` reconciliation.
+- [renderer/styles.css](renderer/styles.css) — verbatim port of the legacy CSS.
 
-### The mode-aware screenshots directory
+### The screenshots directory (configurable)
 
-The same constant is duplicated in all three files above:
+`SCREENSHOTS_DIR` is a module-scoped mutable in [main.js](main.js), set at startup from `<userData>/config.json` (key `screenshotsDir`). On first launch the file doesn't exist and it falls back to `path.join(app.getPath('userData'), 'screenshots')` (on macOS: `~/Library/Application Support/vibes-machine/screenshots/`). The user can change it from the UI — the cog button in the header opens a native folder picker via `vibes:settings:pickDir`.
 
-```ts
-const SCREENSHOTS_DIR = import.meta.env.PROD
-  ? path.resolve('./dist/client/screenshots')
-  : path.resolve('./public/screenshots');
-```
+When the path changes, `setScreenshotsDir(newDir)` does five things: `mkdir -p` the new dir, replace the in-memory `SCREENSHOTS_DIR`, write the new path to `config.json`, restart the watcher (`stopWatcher()` then `startWatcher()`), and broadcast `vibes:changed` so the renderer re-lists. Switching folders **does not move or copy** existing files — the new folder simply becomes the source.
 
-This is intentional, not a refactor target. Reason: `@astrojs/node` copies `public/` into `dist/client/` at build, so the running production server reads/writes the *built copy* — touching `public/screenshots/` in prod has no effect. **If you change this path, update all three files.**
+If the configured path is unreachable on startup (deleted, unmounted volume, permissions), [main.js](main.js) logs the error and falls back to the default, rewriting `config.json`. The app always launches.
 
-### Why uploads are served through `/api/img/[name]` instead of `/screenshots/`
+`app.setName('vibes-machine')` runs **synchronously at module top** in [main.js](main.js). If anything reads `app.getPath('userData')` before `setName`, dev resolves to `~/Library/Application Support/Electron` and prod to the productName, breaking dev↔prod parity. Same for `app.setPath('userData', …)` — both run before `whenReady`.
 
-Astro serves `public/` (or `dist/client/` in prod) as static files, but new uploads written at runtime aren't always picked up by the static handler — and in dev, Vite's public-folder watcher fights the writes. The `/api/img/[name].ts` route reads from disk on each request, so newly written files are immediately visible.
+### IPC contract
 
-### Client-side paste flow ([src/pages/index.astro](src/pages/index.astro:415))
+Promise-based via `ipcMain.handle` / `ipcRenderer.invoke`:
 
-After a successful upload the page does `window.location.reload()` rather than optimistically prepending to the grid. Optimistic insert was tried and removed — the comment at [src/pages/index.astro:399-401](src/pages/index.astro#L399-L401) explains: Vite's public-folder watcher races the optimistic DOM update in dev. Reload re-runs SSR and is the single source of truth.
+- `vibes:list` → `[{ name, mtime, src }]` sorted mtime desc. `src` is `pathToFileURL(absPath).href`, ready for `<img src>`.
+- `vibes:save({ bytes: ArrayBuffer, mime })` → `{ name, mtime, src }`. Validates MIME against whitelist + `bytes.byteLength <= 25 MB` in main, not preload.
+- `vibes:delete({ name })` → `{ ok: true }`. Path-traversal guard + `path.resolve` containment check using current `SCREENSHOTS_DIR`.
+- `vibes:reveal({ name })` → `{ ok: true }`. Same guards, then `shell.showItemInFolder(absPath)`.
+- `vibes:settings:get` → `{ screenshotsDir, isDefault }`.
+- `vibes:settings:pickDir` → opens `dialog.showOpenDialog`. On confirm: switches dir + persists + restarts watcher. Returns `{ screenshotsDir }` or `null` if canceled.
+
+Plus a one-way push: `webContents.send('vibes:changed')` from the watcher debouncer (and from `setScreenshotsDir`); renderer subscribes via `vibes.onChanged(cb)` (returns an unsubscribe function).
+
+### Why optimistic prepend works here
+
+The legacy code disabled optimistic insert because Vite's public-folder watcher raced the DOM update. In Electron, the main process is the **single writer to disk**, so there's no watcher race: the renderer prepends immediately after `vibes.save()` resolves, and the inevitable `vibes:changed` reconciliation through `refresh()` is a no-op for the just-inserted item (de-duped by `name` in [renderer/main.js](renderer/main.js)).
 
 ## Gotchas
 
-- **Same-origin POST check.** Astro 5 rejects cross-origin POSTs. Browser paste works (sends `Origin`). For `curl` testing, pass `-H "Origin: http://127.0.0.1:4321"`.
-- **`export const prerender = false`** is required at the top of every API route — without it, Astro tries to prerender them at build time even with `output: 'server'`.
-- **`public/screenshots/*` is gitignored** (only `.gitkeep` is tracked). Don't commit screenshot files.
-- **Path traversal guard** in [api/img/[name].ts](src/pages/api/img/[name].ts#L23) rejects `/`, `\`, `..`. Keep this in any new file-name route.
+- **Renderer cannot use Node APIs.** `sandbox: true, contextIsolation: true, nodeIntegration: false` is non-negotiable. Anything FS happens in main, gets exposed via the `vibes` bridge. Don't import `node:fs` in [renderer/main.js](renderer/main.js) — it'll throw at load time.
+- **Preload is also sandboxed.** Only `electron` and a small allowlisted set of `node:` modules work. Don't try to do byte-handling in preload — pass `ArrayBuffer` through to main.
+- **CSP must allow `file:` for images.** The meta tag in [renderer/index.html](renderer/index.html) sets `img-src file: data: 'self'`. Without `file:`, every thumbnail silently 404s.
+- **`fs.watch` fires multiple events per write on macOS.** The 75 ms debounce in [main.js](main.js) coalesces them. Watch event payloads are unreliable (filename can be `undefined`); the design just invalidates and re-lists.
+- **`app.setName` ordering** — see "screenshots directory" above. If userData resolves wrong in dev, this is why.
+
+## What's deliberately not here
+
+No bundler, no TypeScript, no Vite, no HMR, no `electron-builder` packaging, no auto-updater, no custom protocol, no menu beyond Electron defaults. Add any of these only when they pay for themselves. Cmd+R reloads the renderer after edits to [renderer/](renderer/); main process changes need a full app restart (`Cmd+Q`, `npm start`).

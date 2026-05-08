@@ -1,67 +1,51 @@
 # vibes-machine
 
-A tiny local site that turns a folder of screenshots into a Pinterest-style
-masonry grid. Click an image for a fullscreen modal, paste from the clipboard
-to add new ones.
+Local screenshots vault. A tiny Electron app that turns a folder of screenshots
+into a Pinterest-style masonry grid. Click an image for a fullscreen modal,
+paste from the clipboard to add new ones.
 
 ## Setup
 
 ```bash
 npm install
-npm run dev
+npm start
 ```
-
-Open http://127.0.0.1:4321.
 
 ## Usage
 
-- **View:** drop image files into `public/screenshots/` and refresh. Newest
-  files appear first. Supported types: `png, jpg, jpeg, gif, webp, avif, bmp`.
-- **Paste:** press `⌘V` anywhere on the page (or click the paste zone in the
-  header first). The image is uploaded to `public/screenshots/` and prepended
-  to the grid without a refresh. Saved as `paste-<timestamp>-<rand>.<ext>`.
-  Max 25 MB per image.
+- **View:** drop image files into `~/Library/Application Support/vibes-machine/screenshots/`
+  and the grid updates automatically (no refresh needed). Newest files appear first.
+  Supported types: `png, jpg, jpeg, gif, webp, avif, bmp`.
+- **Paste:** press `⌘V` anywhere in the window. The image is saved to the
+  screenshots folder as `paste-<timestamp>-<rand>.<ext>` and prepended to the
+  grid. Max 25 MB per image.
 - **Modal:** click any image to open. Arrow keys navigate, `Esc` closes.
+- **Delete:** hover a thumbnail, click the × in the corner.
 
-## Commands
+## Where files live
 
-| Command              | What it does                                       |
-| -------------------- | -------------------------------------------------- |
-| `npm run dev`        | Dev server at http://127.0.0.1:4321                |
-| `npm run build`      | Production build into `dist/`                      |
-| `npm run preview`    | Serve the production build                         |
-| `node ./dist/server/entry.mjs` | Run the built server directly. `PORT=4322` to override |
+| What | Path |
+| --- | --- |
+| Screenshots (default) | `~/Library/Application Support/vibes-machine/screenshots/` |
+| Settings | `~/Library/Application Support/vibes-machine/config.json` |
+
+The screenshots folder is configurable: click the **⚙ cog** in the header to
+pick a different folder via the native picker. Your choice is persisted in
+`config.json`. Switching folders does not move existing files — the new folder
+just becomes the source.
 
 ## How it works
 
-- **Astro 5** with the **`@astrojs/node`** standalone adapter (`output: 'server'`),
-  so the index page lists screenshots on every request rather than freezing
-  them at build time.
-- The grid uses CSS columns (`5 → 4 → 3 → 2 → 1` by viewport width) — no JS
-  layout library.
-- Uploads go to `POST /api/upload` (`src/pages/api/upload.ts`).
+- **Electron 33**, plain JavaScript, no bundler.
+- Main process ([main.js](main.js)) owns the filesystem; renderer talks to it
+  via a `contextBridge` IPC surface (`window.vibes.{list,save,delete,onChanged}`).
+- Images render via `<img src="file:///…">` directly — no custom protocol.
+- `fs.watch` on the screenshots dir broadcasts a `vibes:changed` event to the
+  renderer (debounced 75 ms) which reconciles state by re-listing.
 
-### Where files live
+See [CLAUDE.md](CLAUDE.md) for architecture details.
 
-The screenshot directory is mode-aware:
+## Legacy version
 
-| Mode        | Path                        |
-| ----------- | --------------------------- |
-| Dev         | `./public/screenshots/`     |
-| Production  | `./dist/client/screenshots/` |
-
-This is because the Node adapter copies `public/` into `dist/client/` at
-build, so the running production server reads/writes the built copy.
-
-### Gotcha: CSRF on direct API calls
-
-Astro 5 enforces a same-origin check on POSTs. Browser paste calls send the
-`Origin` header automatically and pass. If you want to test with `curl`, add
-the header explicitly:
-
-```bash
-curl -X POST \
-  -H "Origin: http://127.0.0.1:4321" \
-  -F "image=@some.png;type=image/png" \
-  http://127.0.0.1:4321/api/upload
-```
+The original Astro 5 SSR version is preserved under [legacy/](legacy/) as a
+fallback reference. Run with `cd legacy && npm i && npm run dev`.
