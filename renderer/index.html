@@ -14,12 +14,16 @@
       <div class="paste-zone" id="paste-zone" tabindex="0" contenteditable="true" spellcheck="false" aria-label="Paste image from clipboard">
         paste image here <kbd>⌘V</kbd>
       </div>
-      <button class="cog" id="cog" type="button" aria-label="Choose screenshots folder" title="Choose screenshots folder">⚙</button>
+      <button class="cog" id="cog" type="button" aria-label="Choose screenshots folder" title="Choose screenshots folder">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+        </svg>
+      </button>
     </header>
 
     <div class="empty" id="empty">
       no screenshots yet.<br />
-      paste an image above, or drop files into the screenshots folder.
+      paste <kbd>⌘V</kbd> or drag images in.
     </div>
     <div class="grid" id="grid"></div>
 

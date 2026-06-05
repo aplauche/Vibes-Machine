@@ -205,6 +205,57 @@ document.addEventListener('paste', async (e) => {
   if (handled) e.preventDefault();
 });
 
+// ------- drag-and-drop from Finder -------
+
+// dragenter/dragleave fire for every child element transition. Use a depth
+// counter so the visual stays put while moving over nested elements.
+let dragDepth = 0;
+
+function dragHasFiles(e) {
+  return e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+}
+
+document.addEventListener('dragenter', (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth++;
+  if (dragDepth === 1) document.body.classList.add('drag-active');
+});
+
+document.addEventListener('dragover', (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();             // required for drop to fire
+  e.dataTransfer.dropEffect = 'copy';
+});
+
+document.addEventListener('dragleave', (e) => {
+  if (!dragHasFiles(e)) return;
+  dragDepth--;
+  if (dragDepth <= 0) {
+    dragDepth = 0;
+    document.body.classList.remove('drag-active');
+  }
+});
+
+document.addEventListener('drop', async (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();             // stop the browser from navigating to the file
+  dragDepth = 0;
+  document.body.classList.remove('drag-active');
+
+  const files = Array.from(e.dataTransfer.files || []).filter((f) =>
+    f && f.type && f.type.startsWith('image/'),
+  );
+  if (files.length === 0) {
+    setStatus('err', 'no images in drop');
+    return;
+  }
+  // Sequential so main isn't slammed with concurrent writes; status pill
+  // shows progress per file.
+  for (const file of files) {
+    await uploadBlob(file);
+  }
+});
+
 pasteZone.addEventListener('input', () => {
   if (pasteZone.textContent.length > 64) setStatus('', null);
 });

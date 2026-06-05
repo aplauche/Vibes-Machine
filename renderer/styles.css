@@ -96,11 +96,15 @@ header .count {
   font-size: 14px;
   line-height: 1.6;
 }
-.empty code {
+.empty code,
+.empty kbd {
   background: #1c1c1f;
   padding: 2px 6px;
   border-radius: 4px;
   color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  border: 1px solid #2a2a2e;
 }
 .grid {
   column-gap: var(--gap);
@@ -258,4 +262,17 @@ header .count {
   user-select: text;
   cursor: text;
   z-index: 100;
+}
+
+/* Drag-and-drop hint: dashed inset border around the whole window while
+   files are being dragged over it. pointer-events: none so it doesn't
+   intercept the drop itself. */
+body.drag-active::after {
+  content: '';
+  position: fixed;
+  inset: 6px;
+  border: 2px dashed #8ec07c;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 200;
 }

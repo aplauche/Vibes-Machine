@@ -13,14 +13,14 @@ npm start
 
 ## Usage
 
-- **View:** drop image files into `~/Library/Application Support/vibes-machine/screenshots/`
-  and the grid updates automatically (no refresh needed). Newest files appear first.
+- **Add:** paste with `⌘V`, drag image files in from Finder, or drop them
+  directly into the screenshots folder. Saved as
+  `paste-<timestamp>-<rand>.<ext>`. Max 25 MB per image.
   Supported types: `png, jpg, jpeg, gif, webp, avif, bmp`.
-- **Paste:** press `⌘V` anywhere in the window. The image is saved to the
-  screenshots folder as `paste-<timestamp>-<rand>.<ext>` and prepended to the
-  grid. Max 25 MB per image.
 - **Modal:** click any image to open. Arrow keys navigate, `Esc` closes.
+- **Reveal in Finder:** hover a thumbnail, click the ↗ in the corner.
 - **Delete:** hover a thumbnail, click the × in the corner.
+- **Change folder:** click the ⚙ cog in the header.
 
 ## Where files live
 
