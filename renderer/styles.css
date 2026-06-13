@@ -245,6 +245,23 @@ header .count {
   white-space: nowrap;
 }
 
+/* Opaque black curtain. Fades fully in (hiding the masonry reflow), the upload
+   runs behind it, then it fades back out. Opacity-animated, so it's always
+   rendered — display:none can't transition. */
+.busy-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+  z-index: 900;            /* below modal (1000), above everything else */
+}
+.busy-overlay.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .statusbar {
   position: fixed;
   left: 0;

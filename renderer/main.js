@@ -13,6 +13,7 @@ const modalImg = document.getElementById('modal-img');
 const caption = document.getElementById('modal-caption');
 const cog = document.getElementById('cog');
 const statusbar = document.getElementById('statusbar');
+const busyOverlay = document.getElementById('busy-overlay');
 
 let current = 0;
 
@@ -138,30 +139,60 @@ function setStatus(cls, text) {
   }
 }
 
+const FADE_MS = 200;   // must match the .busy-overlay transition in styles.css
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Fade the black curtain fully in, so the masonry reflow is completely hidden.
+async function fadeToBlack() {
+  busyOverlay.classList.add('show');
+  busyOverlay.setAttribute('aria-hidden', 'false');
+  await sleep(FADE_MS);
+}
+// Fade the curtain back out, revealing the settled layout.
+async function fadeFromBlack() {
+  busyOverlay.classList.remove('show');
+  await sleep(FADE_MS);
+  busyOverlay.setAttribute('aria-hidden', 'true');
+}
+
+// After a prepend, the new tile is grid.firstElementChild. Wait for its image
+// to decode so the masonry reflow finishes *behind* the curtain.
+async function waitForNewTile() {
+  const img = grid.querySelector('figure img');
+  if (!img) return;
+  try { await img.decode(); } catch (_e) { /* decode can reject if cached/odd; ignore */ }
+}
+
 async function uploadBlob(blob) {
   setStatus('busy', 'uploading…');
+  await fadeToBlack();          // fully black BEFORE anything happens
   try {
     const buf = await blob.arrayBuffer();
     const item = await window.vibes.save(buf, blob.type);
     // Optimistic prepend — vibes:changed will reconcile shortly via refresh().
     state.items.unshift(item);
     rebuildGrid();
+    await waitForNewTile();     // let the reflow settle, hidden behind black
     setStatus('ok', 'added ✓');
   } catch (err) {
     setStatus('err', (err && err.message) || 'failed');
+  } finally {
+    await fadeFromBlack();      // fade out from black
   }
 }
 
-async function handleClipboardItems(items) {
+// Synchronously pull the first image File out of clipboard items. Must stay
+// sync + be called during the paste event, both because DataTransferItem is
+// only valid then and because the caller needs to preventDefault() before any
+// await (otherwise the image lands in the contenteditable paste-zone).
+function imageFromClipboard(items) {
   for (const item of items) {
     if (item.kind === 'file' && item.type.startsWith('image/')) {
       const blob = item.getAsFile();
-      if (!blob) continue;
-      await uploadBlob(blob);
-      return true;
+      if (blob) return blob;
     }
   }
-  return false;
+  return null;
 }
 
 // ------- event wiring -------
@@ -199,10 +230,14 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') prevModal();
 });
 
-document.addEventListener('paste', async (e) => {
+document.addEventListener('paste', (e) => {
   if (!e.clipboardData) return;
-  const handled = await handleClipboardItems(Array.from(e.clipboardData.items));
-  if (handled) e.preventDefault();
+  const blob = imageFromClipboard(Array.from(e.clipboardData.items));
+  if (!blob) return;
+  // Synchronous: stop the browser from inserting the image into the paste-zone
+  // before we start the fade. Then run the upload (fire-and-forget).
+  e.preventDefault();
+  uploadBlob(blob);
 });
 
 // ------- drag-and-drop from Finder -------
