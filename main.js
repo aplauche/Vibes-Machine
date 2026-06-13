@@ -211,6 +211,9 @@ function createWindow() {
     height: 900,
     backgroundColor: '#0e0e10',
     title: 'vibes machine',
+    // Sets the window/taskbar icon on Windows & Linux. Ignored on macOS, where
+    // the Dock icon comes from the app bundle — see app.dock.setIcon() below.
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       sandbox: true,
@@ -235,6 +238,12 @@ app.whenReady().then(() => {
     SCREENSHOTS_DIR = defaultScreenshotsDir();
     fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
     saveConfig({ screenshotsDir: SCREENSHOTS_DIR });
+  }
+
+  // macOS: BrowserWindow({ icon }) is ignored; the Dock icon comes from the app
+  // bundle (Electron.app in dev). Override it at runtime so dev shows our icon.
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setIcon(path.join(__dirname, 'assets', 'icon.png'));
   }
 
   registerIpc();

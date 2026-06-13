@@ -57,6 +57,37 @@ The legacy code disabled optimistic insert because Vite's public-folder watcher 
 - **`fs.watch` fires multiple events per write on macOS.** The 75 ms debounce in [main.js](main.js) coalesces them. Watch event payloads are unreliable (filename can be `undefined`); the design just invalidates and re-lists.
 - **`app.setName` ordering** — see "screenshots directory" above. If userData resolves wrong in dev, this is why.
 
+## App icon & window title
+
+The placeholder lives at [assets/icon.png](assets/icon.png) (512×512, generated dependency-free; swap it for a real icon anytime). Three separate things show the app's identity, set in different places:
+
+- **Window title bar** — `title: 'vibes machine'` in [main.js](main.js), but the `<title>` in [renderer/index.html](renderer/index.html) wins once the page loads. Keep them in sync.
+- **Window/taskbar icon (Windows & Linux)** — the `icon:` option on `BrowserWindow` in [main.js](main.js).
+- **Dock icon (macOS)** — `BrowserWindow({ icon })` is *ignored* on macOS; the Dock icon comes from the app bundle. In dev that bundle is `Electron.app`, so [main.js](main.js) calls `app.dock.setIcon()` in `whenReady()` to override it at runtime.
+
+What you **cannot** fix while running unpackaged: the macOS menu-bar app name (top-left, next to the Apple menu) reads "Electron" because it comes from `Electron.app`'s `Info.plist`. Neither `app.setName()` nor any runtime call reliably overrides it. The only real fix is packaging — see below.
+
+## Packaging (for later — not set up yet)
+
+Packaging produces a real `.app`/`.exe` bundle with the correct name, icon, *and* macOS menu-bar name. Recommended: `electron-builder`.
+
+1. `npm i -D electron-builder`
+2. Convert the icon to platform formats. macOS wants `.icns`, Windows wants `.ico`; electron-builder auto-generates them from a single ≥512×512 PNG if you point `build.icon` at `assets/icon.png` (or use `iconutil`/`png2icns` to make `.icns` by hand).
+3. Add to [package.json](package.json):
+   ```json
+   "build": {
+     "appId": "com.vibesmachine.app",
+     "productName": "vibes machine",
+     "icon": "assets/icon.png",
+     "files": ["main.js", "preload.js", "renderer/**", "assets/**"],
+     "mac": { "category": "public.app-category.productivity" }
+   },
+   "scripts": { "dist": "electron-builder" }
+   ```
+4. `npm run dist` → bundle in `dist/`. `productName` becomes the menu-bar name and `.app` filename; `icon` becomes the Dock/file icon. The runtime `app.dock.setIcon()` call is harmless in a packaged build (it just re-sets the same icon) but becomes redundant.
+
+Note: a packaged build reads `app.getPath('userData')` from `productName`, so existing dev data under `…/Application Support/vibes-machine/` carries over only if `productName` resolves to the same `vibes-machine` folder. It won't (`productName` is `"vibes machine"` with a space) — decide whether to migrate or accept a fresh data dir.
+
 ## What's deliberately not here
 
 No bundler, no TypeScript, no Vite, no HMR, no `electron-builder` packaging, no auto-updater, no custom protocol, no menu beyond Electron defaults. Add any of these only when they pay for themselves. Cmd+R reloads the renderer after edits to [renderer/](renderer/); main process changes need a full app restart (`Cmd+Q`, `npm start`).
