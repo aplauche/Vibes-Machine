@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 
 // MUST run before anything reads app.getPath('userData') — otherwise dev mode
@@ -10,8 +11,11 @@ const { pathToFileURL } = require('node:url');
 app.setName('vibes-machine');
 app.setPath('userData', path.join(app.getPath('appData'), 'vibes-machine'));
 
-// Resolved inside whenReady() so app.getPath() is guaranteed to work.
-let SCREENSHOTS_DIR = null;
+// Linked folders, resolved inside whenReady() so app.getPath() is guaranteed to
+// work. ACTIVE_FOLDER_ID is the write target — always a real folder id, never
+// 'all' (which is a *view* the renderer owns, not a place to put files).
+let FOLDERS = [];            // [{ id, path }]
+let ACTIVE_FOLDER_ID = null;
 
 const EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp']);
 const MIME_EXT = {
@@ -36,46 +40,121 @@ function safeName(name) {
   );
 }
 
-function listScreenshots() {
-  const names = fs
-    .readdirSync(SCREENSHOTS_DIR)
-    .filter((n) => !n.startsWith('.') && EXTS.has(path.extname(n).toLowerCase()));
+// ------- folder model -------
 
-  return names
-    .map((name) => {
-      const abs = path.join(SCREENSHOTS_DIR, name);
-      const stat = fs.statSync(abs);
-      return { name, mtime: stat.mtimeMs, src: pathToFileURL(abs).href };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
+function newFolderId() {
+  return crypto.randomUUID().slice(0, 8);
 }
 
-async function saveScreenshot(bytes, mime) {
+function folderById(id) {
+  return FOLDERS.find((f) => f.id === id) || null;
+}
+
+function activeFolder() {
+  return folderById(ACTIVE_FOLDER_ID) || FOLDERS[0] || null;
+}
+
+// Two linked folders can share a basename (~/a/shots and ~/b/shots). Only the
+// colliding ones get their parent dir prepended; unique names stay short.
+function labelFor(folder) {
+  const base = path.basename(folder.path);
+  const collides = FOLDERS.some((f) => f.id !== folder.id && path.basename(f.path) === base);
+  if (!collides) return base;
+  return path.join(path.basename(path.dirname(folder.path)), base);
+}
+
+// The single guard for every path that originates in the renderer. Throws
+// rather than returning null so a caller can't forget to check.
+function resolveInFolder(folderId, name) {
+  const folder = folderById(folderId);
+  if (!folder) throw new Error('unknown folder');
+  if (!safeName(name)) throw new Error('invalid name');
+  const resolved = path.resolve(path.join(folder.path, name));
+  if (!resolved.startsWith(path.resolve(folder.path) + path.sep)) {
+    throw new Error('invalid name');
+  }
+  return resolved;
+}
+
+// True when the two paths are the same or one contains the other — either way
+// linking both would list the same images twice.
+function overlaps(a, b) {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return ra === rb || ra.startsWith(rb + path.sep) || rb.startsWith(ra + path.sep);
+}
+
+// ------- listing -------
+
+function imageNames(folder) {
+  try {
+    return fs
+      .readdirSync(folder.path)
+      .filter((n) => !n.startsWith('.') && EXTS.has(path.extname(n).toLowerCase()));
+  } catch (_e) {
+    // Unmounted volume, deleted dir, permissions — this folder contributes
+    // nothing instead of breaking the listing for every other folder.
+    return [];
+  }
+}
+
+function listFolder(folder) {
+  const names = imageNames(folder);
+
+  const out = [];
+  for (const name of names) {
+    const abs = path.join(folder.path, name);
+    let stat;
+    try {
+      stat = fs.statSync(abs);
+    } catch (_e) {
+      continue; // raced with a delete
+    }
+    out.push({
+      id: `${folder.id}:${name}`,
+      name,
+      folderId: folder.id,
+      mtime: stat.mtimeMs,
+      src: pathToFileURL(abs).href,
+    });
+  }
+  return out;
+}
+
+function listScreenshots(folderId) {
+  const targets =
+    !folderId || folderId === 'all' ? FOLDERS : [folderById(folderId)].filter(Boolean);
+  return targets.flatMap(listFolder).sort((a, b) => b.mtime - a.mtime);
+}
+
+async function saveScreenshot(bytes, mime, folderId) {
   const ext = MIME_EXT[mime];
   if (!ext) throw new Error(`unsupported type: ${mime}`);
 
   const buf = Buffer.from(bytes);
   if (buf.byteLength > MAX_BYTES) throw new Error('file too large');
 
-  await fs.promises.mkdir(SCREENSHOTS_DIR, { recursive: true });
+  const folder = folderById(folderId) || activeFolder();
+  if (!folder) throw new Error('no folder linked');
+
+  await fs.promises.mkdir(folder.path, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const rand = Math.random().toString(36).slice(2, 6);
   const name = `paste-${ts}-${rand}${ext}`;
-  const abs = path.join(SCREENSHOTS_DIR, name);
+  const abs = path.join(folder.path, name);
   await fs.promises.writeFile(abs, buf);
 
-  return { name, mtime: Date.now(), src: pathToFileURL(abs).href };
+  return {
+    id: `${folder.id}:${name}`,
+    name,
+    folderId: folder.id,
+    mtime: Date.now(),
+    src: pathToFileURL(abs).href,
+  };
 }
 
-async function deleteScreenshot(name) {
-  if (!safeName(name)) throw new Error('invalid name');
-  const abs = path.join(SCREENSHOTS_DIR, name);
-  // Defense-in-depth: ensure resolved path stays inside SCREENSHOTS_DIR.
-  const resolved = path.resolve(abs);
-  if (!resolved.startsWith(path.resolve(SCREENSHOTS_DIR) + path.sep)) {
-    throw new Error('invalid name');
-  }
-  await fs.promises.unlink(resolved);
+async function deleteScreenshot(folderId, name) {
+  await fs.promises.unlink(resolveInFolder(folderId, name));
   return { ok: true };
 }
 
@@ -97,26 +176,46 @@ function shortenPath(p) {
 }
 
 function loadConfig() {
+  let obj = null;
   try {
-    const raw = fs.readFileSync(configPath(), 'utf8');
-    const obj = JSON.parse(raw);
-    if (obj && typeof obj.screenshotsDir === 'string' && obj.screenshotsDir.length > 0) {
-      return { screenshotsDir: obj.screenshotsDir };
-    }
+    obj = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
   } catch (_e) {
     // missing or malformed — fall through to defaults
   }
-  return { screenshotsDir: defaultScreenshotsDir() };
+
+  if (obj && Array.isArray(obj.folders)) {
+    const folders = obj.folders
+      .filter((f) => f && typeof f.path === 'string' && f.path.length > 0)
+      .map((f) => ({
+        id: typeof f.id === 'string' && f.id.length > 0 ? f.id : newFolderId(),
+        path: path.resolve(f.path),
+      }));
+    if (folders.length > 0) {
+      const active = folders.some((f) => f.id === obj.activeFolderId)
+        ? obj.activeFolderId
+        : folders[0].id;
+      return { folders, activeFolderId: active };
+    }
+  }
+
+  // v1 → v2: a single { screenshotsDir } becomes a one-folder list.
+  const dir =
+    obj && typeof obj.screenshotsDir === 'string' && obj.screenshotsDir.length > 0
+      ? path.resolve(obj.screenshotsDir)
+      : defaultScreenshotsDir();
+  const folder = { id: newFolderId(), path: dir };
+  return { folders: [folder], activeFolderId: folder.id };
 }
 
-function saveConfig(cfg) {
+function saveConfig() {
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
+  const cfg = { version: 2, folders: FOLDERS, activeFolderId: ACTIVE_FOLDER_ID };
   fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2));
 }
 
-// ------- fs.watch with debounce (restartable on folder change) -------
+// ------- fs.watch with debounce, one watcher per linked folder -------
 
-let watcher = null;
+const watchers = new Map(); // folder id → fs.FSWatcher
 let watcherTimer = null;
 
 function broadcastChanged() {
@@ -125,81 +224,151 @@ function broadcastChanged() {
   }
 }
 
-function stopWatcher() {
-  if (watcherTimer) {
-    clearTimeout(watcherTimer);
-    watcherTimer = null;
-  }
-  if (watcher) {
-    try { watcher.close(); } catch (_e) { /* ignore */ }
-    watcher = null;
-  }
+function stopWatcher(id) {
+  const w = watchers.get(id);
+  if (!w) return;
+  try { w.close(); } catch (_e) { /* ignore */ }
+  watchers.delete(id);
 }
 
-function startWatcher() {
-  stopWatcher();
+function startWatcher(folder) {
+  stopWatcher(folder.id);
   try {
-    watcher = fs.watch(SCREENSHOTS_DIR, { persistent: false }, () => {
+    const w = fs.watch(folder.path, { persistent: false }, () => {
+      // One debounce shared across every folder: the renderer re-lists
+      // wholesale, so which folder fired doesn't matter.
       if (watcherTimer) clearTimeout(watcherTimer);
       watcherTimer = setTimeout(broadcastChanged, 75);
     });
+    watchers.set(folder.id, w);
   } catch (e) {
-    console.error('fs.watch failed:', e);
+    console.error(`fs.watch failed for ${folder.path}:`, e);
   }
 }
 
-function setScreenshotsDir(newDir) {
-  const resolvedNew = path.resolve(newDir);
-  if (resolvedNew === path.resolve(SCREENSHOTS_DIR)) return;
-  fs.mkdirSync(resolvedNew, { recursive: true });
-  SCREENSHOTS_DIR = resolvedNew;
-  saveConfig({ screenshotsDir: resolvedNew });
-  startWatcher();
+// ------- folder mutations -------
+
+function addFolder(dirPath) {
+  const resolved = path.resolve(dirPath);
+  const clash = FOLDERS.find((f) => overlaps(resolved, f.path));
+  if (clash) {
+    throw new Error(
+      path.resolve(clash.path) === resolved
+        ? 'folder already linked'
+        : `overlaps ${labelFor(clash)}`,
+    );
+  }
+
+  fs.mkdirSync(resolved, { recursive: true });
+  const folder = { id: newFolderId(), path: resolved };
+  FOLDERS.push(folder);
+  if (!folderById(ACTIVE_FOLDER_ID)) ACTIVE_FOLDER_ID = folder.id;
+  saveConfig();
+  startWatcher(folder);
   broadcastChanged();
+  return folder;
+}
+
+// Unlink only — nothing on disk is ever touched.
+function removeFolder(id) {
+  const i = FOLDERS.findIndex((f) => f.id === id);
+  if (i === -1) throw new Error('unknown folder');
+  stopWatcher(id);
+  FOLDERS.splice(i, 1);
+
+  // Keep at least one folder linked so a paste always has somewhere to land.
+  if (FOLDERS.length === 0) {
+    const fallback = { id: newFolderId(), path: defaultScreenshotsDir() };
+    fs.mkdirSync(fallback.path, { recursive: true });
+    FOLDERS.push(fallback);
+    startWatcher(fallback);
+  }
+  if (!folderById(ACTIVE_FOLDER_ID)) {
+    ACTIVE_FOLDER_ID = FOLDERS[Math.min(i, FOLDERS.length - 1)].id;
+  }
+
+  saveConfig();
+  broadcastChanged();
+}
+
+function setActiveFolder(id) {
+  if (!folderById(id)) throw new Error('unknown folder');
+  if (id === ACTIVE_FOLDER_ID) return;
+  ACTIVE_FOLDER_ID = id;
+  saveConfig();
+  broadcastChanged();
+}
+
+// Snapshot for the sidebar. Doubles as the availability re-check: a folder that
+// came back (remounted volume) gets its watcher restored here.
+function describeFolders() {
+  const folders = FOLDERS.map((f) => {
+    const available = fs.existsSync(f.path);
+    if (available && !watchers.has(f.id)) startWatcher(f);
+    if (!available && watchers.has(f.id)) stopWatcher(f.id);
+    return {
+      id: f.id,
+      path: f.path,
+      display: shortenPath(f.path),
+      label: labelFor(f),
+      isDefault: path.resolve(f.path) === path.resolve(defaultScreenshotsDir()),
+      available,
+      // Names only — the sidebar badge doesn't need an mtime per file.
+      count: available ? imageNames(f).length : 0,
+    };
+  });
+  const active = activeFolder();
+  return { folders, activeFolderId: active ? active.id : null };
 }
 
 // ------- IPC -------
 
 function registerIpc() {
-  ipcMain.handle('vibes:list', () => listScreenshots());
+  ipcMain.handle('vibes:list', (_e, args) => listScreenshots(args && args.folderId));
 
-  ipcMain.handle('vibes:save', async (_e, { bytes, mime }) => {
-    return saveScreenshot(bytes, mime);
+  ipcMain.handle('vibes:save', async (_e, { bytes, mime, folderId }) => {
+    return saveScreenshot(bytes, mime, folderId);
   });
 
-  ipcMain.handle('vibes:delete', async (_e, { name }) => {
-    return deleteScreenshot(name);
+  ipcMain.handle('vibes:delete', async (_e, { folderId, name }) => {
+    return deleteScreenshot(folderId, name);
   });
 
-  ipcMain.handle('vibes:reveal', (_e, { name }) => {
-    if (!safeName(name)) throw new Error('invalid name');
-    const abs = path.join(SCREENSHOTS_DIR, name);
-    const resolved = path.resolve(abs);
-    if (!resolved.startsWith(path.resolve(SCREENSHOTS_DIR) + path.sep)) {
-      throw new Error('invalid name');
-    }
+  ipcMain.handle('vibes:reveal', (_e, { folderId, name }) => {
+    const resolved = resolveInFolder(folderId, name);
     if (!fs.existsSync(resolved)) throw new Error('not found');
     shell.showItemInFolder(resolved);
     return { ok: true };
   });
 
-  ipcMain.handle('vibes:settings:get', () => ({
-    screenshotsDir: SCREENSHOTS_DIR,
-    screenshotsDirDisplay: shortenPath(SCREENSHOTS_DIR),
-    isDefault: path.resolve(SCREENSHOTS_DIR) === path.resolve(defaultScreenshotsDir()),
-  }));
+  ipcMain.handle('vibes:folders:list', () => describeFolders());
 
-  ipcMain.handle('vibes:settings:pickDir', async (e) => {
+  ipcMain.handle('vibes:folders:add', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
+    const current = activeFolder();
     const result = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'createDirectory'],
-      defaultPath: SCREENSHOTS_DIR,
-      title: 'Choose screenshots folder',
-      buttonLabel: 'Use this folder',
+      defaultPath: current ? current.path : app.getPath('home'),
+      title: 'Add a folder',
+      buttonLabel: 'Link this folder',
     });
     if (result.canceled || !result.filePaths[0]) return null;
-    setScreenshotsDir(result.filePaths[0]);
-    return { screenshotsDir: SCREENSHOTS_DIR };
+
+    const folder = addFolder(result.filePaths[0]);
+    return {
+      folder: { id: folder.id, path: folder.path, label: labelFor(folder) },
+      ...describeFolders(),
+    };
+  });
+
+  ipcMain.handle('vibes:folders:remove', (_e, { id }) => {
+    removeFolder(id);
+    return { ok: true, ...describeFolders() };
+  });
+
+  ipcMain.handle('vibes:folders:setActive', (_e, { id }) => {
+    setActiveFolder(id);
+    return { ok: true, activeFolderId: ACTIVE_FOLDER_ID };
   });
 }
 
@@ -228,17 +397,20 @@ function createWindow() {
 
 app.whenReady().then(() => {
   const cfg = loadConfig();
-  SCREENSHOTS_DIR = path.resolve(cfg.screenshotsDir);
-  try {
-    fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-  } catch (e) {
-    // Configured dir is unreachable (deleted, permissions, unmounted volume).
-    // Fall back to default so the app still launches.
-    console.error(`screenshots dir ${SCREENSHOTS_DIR} unreachable, falling back to default:`, e);
-    SCREENSHOTS_DIR = defaultScreenshotsDir();
-    fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-    saveConfig({ screenshotsDir: SCREENSHOTS_DIR });
+  FOLDERS = cfg.folders;
+  ACTIVE_FOLDER_ID = cfg.activeFolderId;
+
+  // Deliberately no mkdir over existing links: re-creating a folder the user
+  // deleted, or stubbing out the mount point of an unplugged drive, is worse
+  // than showing it as unavailable. Only the fallback below gets created.
+  if (!FOLDERS.some((f) => fs.existsSync(f.path))) {
+    console.error('no linked folder is reachable, falling back to the default');
+    const fallback = { id: newFolderId(), path: defaultScreenshotsDir() };
+    fs.mkdirSync(fallback.path, { recursive: true });
+    FOLDERS.push(fallback);
+    ACTIVE_FOLDER_ID = fallback.id;
   }
+  saveConfig();
 
   // macOS: BrowserWindow({ icon }) is ignored; the Dock icon comes from the app
   // bundle (Electron.app in dev). Override it at runtime so dev shows our icon.
@@ -247,7 +419,7 @@ app.whenReady().then(() => {
   }
 
   registerIpc();
-  startWatcher();
+  for (const f of FOLDERS) startWatcher(f);
   createWindow();
 
   app.on('activate', () => {

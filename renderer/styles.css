@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
   --gap: 12px;
+  --sidebar-w: 200px;
   --bg: #0e0e10;
   --fg: #e8e8e8;
   --muted: #888;
@@ -14,9 +15,142 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 body {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+.main {
+  flex: 1;
+  /* Without this a wide masonry column can force the flex item past 100%,
+     pushing the sidebar off-screen. */
+  min-width: 0;
   /* Reserve space so the bottom of the grid isn't hidden by the fixed statusbar. */
   padding-bottom: 32px;
 }
+
+/* ------- folder sidebar ------- */
+
+.sidebar {
+  flex: 0 0 auto;
+  width: var(--sidebar-w);
+  border-right: 1px solid #1a1a1d;
+  padding: 18px 10px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  transition: width 160ms ease, padding 160ms ease, opacity 120ms ease;
+  /* Pinned to the viewport so "+ add folder" stays reachable however tall the
+     grid grows. align-self overrides the parent's stretch — a stretched flex
+     item is sized by the container and can't stick. */
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+}
+body.sidebar-collapsed .sidebar {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+.sidebar-title {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.folder-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.folder-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  outline: none;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.folder-tab:hover,
+.folder-tab:focus-visible {
+  background: #15151a;
+  color: var(--fg);
+}
+.folder-tab.selected {
+  background: #15151a;
+  border-color: #444;
+  color: var(--fg);
+}
+.folder-tab .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-tab .n {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--muted);
+}
+/* Write target, only marked when the grid isn't already scoped to it. */
+.folder-tab .dot { color: #8ec07c; font-size: 9px; }
+.folder-tab .warn { color: #d8a657; font-size: 11px; }
+.folder-tab.unavailable .name { opacity: 0.55; }
+.folder-tab .unlink {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.folder-tab:hover .unlink,
+.folder-tab .unlink:focus-visible { opacity: 1; }
+.folder-tab .unlink:hover { color: #fb4934; }
+.add-folder {
+  background: none;
+  border: 1px dashed #2a2a2e;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.add-folder:hover,
+.add-folder:focus {
+  border-color: #444;
+  color: var(--fg);
+  background: #15151a;
+  outline: none;
+}
+
 header {
   padding: 18px 20px 4px;
   display: flex;
@@ -66,13 +200,14 @@ header .count {
   padding: 1px 5px;
   color: var(--fg);
 }
-.cog {
+.icon-btn {
   background: none;
   border: 1px solid #2a2a2e;
   border-radius: 6px;
-  width: 30px;
-  height: 30px;
-  font-size: 16px;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  font-size: 14px;
   line-height: 1;
   color: var(--muted);
   cursor: pointer;
@@ -82,13 +217,17 @@ header .count {
   justify-content: center;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
-.cog:hover,
-.cog:focus {
+.icon-btn:hover,
+.icon-btn:focus {
   border-color: #444;
   color: var(--fg);
   background: #15151a;
   outline: none;
 }
+/* The hamburger is the only way back once the sidebar is collapsed, so it
+   exists solely in that state. */
+.sidebar-open { display: none; }
+body.sidebar-collapsed .sidebar-open { display: flex; }
 .empty {
   padding: 60px 20px;
   text-align: center;
@@ -111,10 +250,12 @@ header .count {
   column-count: 5;
   padding: var(--gap);
 }
-@media (max-width: 1400px) { .grid { column-count: 4; } }
-@media (max-width: 1024px) { .grid { column-count: 3; } }
-@media (max-width: 700px)  { .grid { column-count: 2; } }
-@media (max-width: 420px)  { .grid { column-count: 1; } }
+/* Viewport-based, so each threshold is shifted up by --sidebar-w (200px) to
+   account for the rail the grid no longer gets to use. */
+@media (max-width: 1600px) { .grid { column-count: 4; } }
+@media (max-width: 1224px) { .grid { column-count: 3; } }
+@media (max-width: 900px)  { .grid { column-count: 2; } }
+@media (max-width: 620px)  { .grid { column-count: 1; } }
 
 .grid figure {
   position: relative;
