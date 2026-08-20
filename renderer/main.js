@@ -6,7 +6,9 @@
 // `view` is what the grid shows: 'all' or a folder id. `activeFolderId` is
 // where new pastes land and is always a real folder — selecting 'all' widens
 // the grid without leaving writes homeless.
-const state = { items: [], folders: [], activeFolderId: null, view: 'all' };
+// `collection` is the film-roll cart: full item snapshots in the order they
+// were collected, held in memory only — it is deliberately gone on quit.
+const state = { items: [], folders: [], activeFolderId: null, view: 'all', collection: [] };
 
 const grid = document.getElementById('grid');
 const empty = document.getElementById('empty');
@@ -21,6 +23,15 @@ const folderTabs = document.getElementById('folder-tabs');
 const addFolderBtn = document.getElementById('add-folder');
 const collapseBtn = document.getElementById('sidebar-collapse');
 const openBtn = document.getElementById('sidebar-open');
+const filmBtn = document.getElementById('film');
+const filmCount = document.getElementById('film-count');
+const sheet = document.getElementById('collection');
+const sheetGrid = document.getElementById('collection-grid');
+const sheetCount = document.getElementById('collection-count');
+const sheetCreate = document.getElementById('collection-create');
+const sheetClear = document.getElementById('collection-clear');
+const sheetDest = document.getElementById('collection-dest');
+const sheetCopy = document.getElementById('collection-copy');
 
 let current = 0;
 
@@ -81,12 +92,24 @@ function rebuildGrid() {
     fig.dataset.id = item.id;
     fig.dataset.name = item.name;
     fig.dataset.folder = item.folderId;
+    if (isCollected(item.id)) fig.classList.add('collected');
 
     const img = document.createElement('img');
     img.src = item.src;
     img.alt = item.name;
     img.loading = 'lazy';
     fig.appendChild(img);
+
+    // Text glyph, not an SVG: the grid's click delegation tests
+    // e.target.classList, and an SVG child would make e.target the <path>.
+    const collect = document.createElement('button');
+    collect.type = 'button';
+    collect.className = 'collect';
+    const collected = isCollected(item.id);
+    collect.setAttribute('aria-label', collected ? 'Remove from collection' : 'Collect');
+    collect.title = collected ? 'Remove from collection' : 'Collect';
+    collect.textContent = collected ? '✓' : '+';
+    fig.appendChild(collect);
 
     const reveal = document.createElement('button');
     reveal.type = 'button';
@@ -226,6 +249,8 @@ async function refreshFolders() {
   if (state.view !== 'all' && !folderById(state.view)) setView('all');
   renderFolders();
   updateStatusbar();
+  // The destination dropdown and its enabled state track the folder list.
+  updateCollectionUI();
   // Refresh the paste hint's "→ folder" suffix, but never stomp on a
   // transient uploading/ok/error message.
   if (!statusCls) setStatus('', null);
@@ -260,9 +285,170 @@ async function unlinkFolder(id) {
     return;
   }
   if (state.view === id) setView('all');
+  // Those files are no longer reachable through any linked folder.
+  pruneCollection((c) => c.folderId !== id);
   setStatus('ok', `unlinked ${f.label}`);
   await refreshFolders();
   refresh();
+}
+
+// ------- collection (film roll) -------
+
+function isCollected(id) {
+  return state.collection.some((c) => c.id === id);
+}
+
+function updateCollectionUI() {
+  const n = state.collection.length;
+  filmCount.textContent = n === 0 ? '' : String(n);
+  filmBtn.title = n === 0 ? 'Collection (empty)' : `Collection — ${n}`;
+  sheetCount.textContent = `${n} ${n === 1 ? 'image' : 'images'}`;
+  sheetCreate.disabled = n === 0;
+  sheetCreate.textContent = n === 0 ? 'create folder' : `create folder from ${n}`;
+  sheetCopy.disabled = n === 0 || state.folders.length === 0;
+  sheetDest.disabled = state.folders.length === 0;
+  if (sheetIsOpen()) renderSheet();
+}
+
+// Destination dropdown: every linked folder, unavailable ones disabled.
+// Keeps the current pick when it survives a re-render, else the active folder.
+function renderDest() {
+  const previous = sheetDest.value;
+  sheetDest.replaceChildren();
+  for (const f of state.folders) {
+    const opt = document.createElement('option');
+    opt.value = f.id;
+    opt.textContent = f.available ? f.label : `${f.label} (unavailable)`;
+    opt.disabled = !f.available;
+    sheetDest.append(opt);
+  }
+  const stillThere = state.folders.some((f) => f.id === previous && f.available);
+  sheetDest.value = stillThere ? previous : state.activeFolderId || '';
+}
+
+// Both destinations report the same way: what landed, and what didn't.
+function copyReport(res, label) {
+  const notes = [];
+  if (res.skipped) notes.push(`${res.skipped} missing`);
+  if (res.alreadyThere) notes.push(`${res.alreadyThere} already there`);
+  return `${res.copied} → ${label}${notes.length ? ', ' + notes.join(', ') : ''}`;
+}
+
+function toggleCollect(fig) {
+  const { id } = fig.dataset;
+  const item = state.items.find((it) => it.id === id);
+  if (!item) return;
+  if (isCollected(id)) {
+    state.collection = state.collection.filter((c) => c.id !== id);
+  } else {
+    // Snapshot, not a reference — state.items is replaced on every refresh.
+    state.collection.push({ ...item });
+  }
+  updateCollectionUI();
+  rebuildGrid();
+}
+
+// Drop entries that can no longer be valid. Called after a delete (one id) and
+// after unlinking a folder (every id in it).
+function pruneCollection(pred) {
+  const before = state.collection.length;
+  state.collection = state.collection.filter(pred);
+  if (state.collection.length !== before) updateCollectionUI();
+}
+
+function sheetIsOpen() {
+  return sheet.classList.contains('open');
+}
+
+function renderSheet() {
+  renderDest();
+  sheetGrid.replaceChildren();
+  if (state.collection.length === 0) {
+    const msg = document.createElement('div');
+    msg.className = 'sheet-empty';
+    msg.append('nothing collected yet.');
+    msg.append(document.createElement('br'));
+    msg.append('hover any image and hit + to add it.');
+    sheetGrid.append(msg);
+    return;
+  }
+  for (const item of state.collection) {
+    const fig = document.createElement('figure');
+    fig.dataset.id = item.id;
+
+    const img = document.createElement('img');
+    img.src = item.src;
+    img.alt = item.name;
+    img.loading = 'lazy';
+    fig.append(img);
+
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'drop';
+    drop.dataset.id = item.id;
+    drop.title = 'Remove from collection';
+    drop.setAttribute('aria-label', `Remove ${item.name} from collection`);
+    drop.innerHTML = '&times;';
+    fig.append(drop);
+
+    const from = document.createElement('div');
+    from.className = 'from';
+    const f = folderById(item.folderId);
+    from.textContent = f ? f.label : item.name;
+    from.title = item.name;
+    fig.append(from);
+
+    sheetGrid.append(fig);
+  }
+}
+
+function openSheet() {
+  renderSheet();
+  sheet.classList.add('open');
+  sheet.setAttribute('aria-hidden', 'false');
+}
+
+function closeSheet() {
+  sheet.classList.remove('open');
+  sheet.setAttribute('aria-hidden', 'true');
+}
+
+async function createFolderFromCollection() {
+  const items = state.collection.map(({ folderId, name }) => ({ folderId, name }));
+  if (items.length === 0) return;
+  try {
+    const res = await window.vibes.collection.createFolder(items);
+    if (!res) return;   // user canceled the save dialog — collection untouched
+    state.collection = [];
+    updateCollectionUI();
+    closeSheet();
+    setStatus('ok', copyReport(res, res.folder.label));
+    await refreshFolders();
+    // Show the result: scopes the grid and makes it the write target.
+    selectView(res.folder.id);
+  } catch (err) {
+    setStatus('err', errText(err));
+  }
+}
+
+// Copy the collection into a folder that's already linked. Unlike create, this
+// leaves the current view alone — the destination already exists and you know
+// where it is; the sidebar count and the status pill are enough feedback.
+async function copyCollectionTo() {
+  const items = state.collection.map(({ folderId, name }) => ({ folderId, name }));
+  const destId = sheetDest.value;
+  if (items.length === 0 || !destId) return;
+  try {
+    const res = await window.vibes.collection.copyTo(items, destId);
+    state.collection = [];
+    updateCollectionUI();
+    closeSheet();
+    setStatus('ok', copyReport(res, res.folder.label));
+    await refreshFolders();
+    refresh();
+  } catch (err) {
+    setStatus('err', errText(err));
+  }
 }
 
 // ------- modal -------
@@ -311,6 +497,7 @@ async function deleteItem(fig) {
     return;
   }
   state.items = state.items.filter((it) => it.id !== id);
+  pruneCollection((c) => c.id !== id);
   rebuildGrid();
 }
 
@@ -410,6 +597,12 @@ function imageFromClipboard(items) {
 // ------- event wiring -------
 
 grid.addEventListener('click', (e) => {
+  if (e.target.classList && e.target.classList.contains('collect')) {
+    e.stopPropagation();
+    const fig = e.target.closest('figure[data-id]');
+    if (fig) toggleCollect(fig);
+    return;
+  }
   if (e.target.classList && e.target.classList.contains('reveal')) {
     e.stopPropagation();
     const fig = e.target.closest('figure[data-name]');
@@ -462,6 +655,25 @@ addFolderBtn.addEventListener('click', async () => {
 collapseBtn.addEventListener('click', () => setCollapsed(true));
 openBtn.addEventListener('click', () => setCollapsed(false));
 
+filmBtn.addEventListener('click', () => (sheetIsOpen() ? closeSheet() : openSheet()));
+document.getElementById('collection-close').addEventListener('click', closeSheet);
+sheet.addEventListener('click', (e) => {
+  if (e.target === sheet) closeSheet();   // backdrop
+});
+sheetGrid.addEventListener('click', (e) => {
+  const drop = e.target.closest('.drop');
+  if (!drop) return;
+  pruneCollection((c) => c.id !== drop.dataset.id);
+  rebuildGrid();   // the tile in the main grid loses its collected mark
+});
+sheetClear.addEventListener('click', () => {
+  if (state.collection.length === 0) return;
+  pruneCollection(() => false);
+  rebuildGrid();
+});
+sheetCreate.addEventListener('click', createFolderFromCollection);
+sheetCopy.addEventListener('click', copyCollectionTo);
+
 modal.addEventListener('click', (e) => {
   if (e.target.classList.contains('nav')) {
     if (e.target.classList.contains('next')) nextModal();
@@ -472,6 +684,11 @@ modal.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  // The sheet sits above the lightbox, so it gets first claim on Escape.
+  if (sheetIsOpen()) {
+    if (e.key === 'Escape') closeSheet();
+    return;
+  }
   if (!modal.classList.contains('open')) return;
   if (e.key === 'Escape') closeModal();
   else if (e.key === 'ArrowRight') nextModal();
@@ -555,4 +772,5 @@ window.vibes.onChanged(async () => {
 
 // Initial load. Folders first: the stored view may name a folder that's gone.
 loadUiPrefs();
+updateCollectionUI();
 refreshFolders().then(() => refresh());

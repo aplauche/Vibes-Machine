@@ -18,9 +18,11 @@ A minimal Electron app — six files, one runtime dependency (`electron`). The r
 
 - [main.js](main.js) — main process. Owns the linked-folder list, IPC handlers (`vibes:list/save/delete/reveal`, `vibes:folders:*`), one `fs.watch` per folder sharing a 75 ms debounce that broadcasts `vibes:changed`, config persistence, BrowserWindow creation.
 - [preload.js](preload.js) — `contextBridge.exposeInMainWorld('vibes', { list, save, delete, reveal, folders, onChanged })`. Sandbox-safe, CommonJS, no Node API leakage to renderer.
-- [renderer/index.html](renderer/index.html) — folder sidebar + main column (paste-zone, grid), modal. Strict CSP (`script-src 'self'`, `img-src file: data: 'self'`).
-- [renderer/main.js](renderer/main.js) — DOM event wiring, `state` source-of-truth model, sidebar rendering, modal/keyboard nav, paste-to-upload with optimistic prepend, `vibes.onChanged` reconciliation.
-- [renderer/styles.css](renderer/styles.css) — port of the legacy CSS, plus the sidebar.
+- [renderer/index.html](renderer/index.html) — folder sidebar + main column (paste-zone, grid), image lightbox, collection sheet. Strict CSP (`script-src 'self'`, `img-src file: data: 'self'`).
+- [renderer/main.js](renderer/main.js) — DOM event wiring, `state` source-of-truth model, sidebar rendering, collection cart, modal/keyboard nav, paste-to-upload with optimistic prepend, `vibes.onChanged` reconciliation.
+- [renderer/styles.css](renderer/styles.css) — port of the legacy CSS, plus the sidebar and collection sheet.
+
+There are **two** dialogs and they are separate elements: `#modal` is the full-bleed image lightbox (prev/next nav), `#collection` is a centered sheet at a higher `z-index`. The shared `keydown` handler gives the sheet first claim on Escape.
 
 ### Linked folders
 
@@ -53,10 +55,46 @@ Promise-based via `ipcMain.handle` / `ipcRenderer.invoke`. Items are identified 
 - `vibes:folders:list` → `{ folders: [{ id, path, display, label, isDefault, available, count }], activeFolderId }`. Doubles as the availability re-check — a remounted folder gets its watcher restored here.
 - `vibes:folders:add` → native picker, then `addFolder`. `{ folder, folders, activeFolderId }`, or `null` if canceled.
 - `vibes:folders:remove({ id })` / `vibes:folders:setActive({ id })` → `{ ok: true, … }`.
+- `vibes:collection:createFolder({ items: [{ folderId, name }] })` → opens `dialog.showSaveDialog`, then copies into the new folder and links it. `{ folder, copied, skipped, alreadyThere, folders, activeFolderId }`, or `null` if canceled.
+- `vibes:collection:copyTo({ items, folderId })` → copies into an already-linked folder. Same return shape, minus the dialog. Throws if the destination is unlinked or unreachable, leaving the collection intact.
 
 `resolveInFolder(folderId, name)` is the **single** guard for every renderer-supplied path: unknown-folder check, `safeName()` traversal check, and a `path.resolve` containment check against that folder. Delete and reveal both go through it — don't re-implement the check at a call site.
 
 Plus a one-way push: `webContents.send('vibes:changed')` from the watcher debouncer and from every folder mutation; renderer subscribes via `vibes.onChanged(cb)` (returns an unsubscribe function).
+
+### Collections (the film roll)
+
+The header's film-roll button is a cart. Hitting `+` on any tile adds it to `state.collection`
+in [renderer/main.js](renderer/main.js) — an array of **full item snapshots** in the order
+collected, so the sheet can render `src` without re-listing. It is **session-only**: held in
+memory, deliberately gone on quit. No localStorage, no stale-reference pruning at startup.
+
+The sheet has two destinations, both **copying, never moving**, and both routed through the
+shared `copyItemsInto()` in [main.js](main.js):
+
+- `vibes:collection:createFolder` — a new folder via `dialog.showSaveDialog`, then linked.
+  Everything that can fail is checked *before the first byte is written*, in particular the
+  `overlaps()` test: writing into a folder `addFolder` would then refuse to link leaves files
+  stranded. On success the renderer scopes the view to the new folder.
+- `vibes:collection:copyTo` — an already-linked folder chosen from the footer dropdown. No
+  folder is created. Deliberately **does not** switch the view: the destination already exists,
+  so the sidebar count and status pill are enough feedback.
+
+`copyItemsInto()` skips items whose `folderId` is already the destination rather than
+duplicating them as `shot-2.png` — collecting from the `all` view routinely picks up images
+that already live in the target. Genuine filename collisions with *different* files are
+resolved by `uniqueName()` (`shot.png` → `shot-2.png`). Both handlers report
+`{ copied, skipped, alreadyThere }`, which the renderer renders as `3 → refs, 2 already there`.
+
+Within a session the collection is kept honest by pruning: deleting a tile drops that id,
+unlinking a folder drops every entry from it. A file deleted *outside* the app leaves a dead
+entry — rather than a reconcile pass, main skips missing sources at create time and returns a
+`skipped` count the renderer surfaces (`3 → refs, 1 missing`).
+
+**Tile buttons must use text glyphs, not SVG.** The grid uses click delegation on
+`e.target.classList.contains('collect'|'del'|'reveal')`; an SVG child would make `e.target` the
+`<path>` and the check would silently fail. The header's film button is fine with an SVG — it
+has a direct listener.
 
 ### Why optimistic prepend works here
 

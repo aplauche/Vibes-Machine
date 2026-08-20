@@ -158,6 +158,75 @@ async function deleteScreenshot(folderId, name) {
   return { ok: true };
 }
 
+// Two linked folders may hold the same filename, so collecting both into one
+// new folder needs a tiebreaker: name.png → name-2.png.
+function uniqueName(dir, name) {
+  const ext = path.extname(name);
+  const base = path.basename(name, ext);
+  let candidate = name;
+  for (let i = 2; fs.existsSync(path.join(dir, candidate)); i++) {
+    candidate = `${base}-${i}${ext}`;
+  }
+  return candidate;
+}
+
+// Copy collected items into destDir. `destFolderId` is the linked folder being
+// copied into, or null when the destination is a folder that doesn't exist yet.
+async function copyItemsInto(destDir, items, destFolderId) {
+  const sources = [];
+  let alreadyThere = 0;
+  for (const { folderId, name } of items) {
+    // Copying an item back into the folder it already lives in would just
+    // drop name-2.png beside it. Skip rather than duplicate — collecting from
+    // the "all" view routinely picks up items already in the destination.
+    if (destFolderId && folderId === destFolderId) {
+      alreadyThere++;
+      continue;
+    }
+    // Resolve every source through the usual guard before writing anything.
+    sources.push({ abs: resolveInFolder(folderId, name), name });
+  }
+
+  await fs.promises.mkdir(destDir, { recursive: true });
+
+  let copied = 0;
+  let skipped = 0;
+  for (const { abs, name } of sources) {
+    // The file may have been deleted outside the app since it was collected.
+    if (!fs.existsSync(abs)) {
+      skipped++;
+      continue;
+    }
+    await fs.promises.copyFile(abs, path.join(destDir, uniqueName(destDir, name)));
+    copied++;
+  }
+  return { copied, skipped, alreadyThere };
+}
+
+// Copy a collection into a brand-new folder, then link it.
+// Everything that can fail is checked *before* the first byte is written.
+async function createFolderFromCollection(target, items) {
+  const resolved = path.resolve(target);
+
+  // Writing into a folder addFolder would then refuse to link leaves files
+  // stranded, so the overlap check comes first.
+  const clash = FOLDERS.find((f) => overlaps(resolved, f.path));
+  if (clash) throw new Error(`overlaps ${labelFor(clash)}`);
+
+  const res = await copyItemsInto(resolved, items, null);
+  const folder = addFolder(resolved);
+  return { folder, ...res };
+}
+
+// Copy a collection into a folder that's already linked.
+async function copyCollectionInto(destFolderId, items) {
+  const dest = folderById(destFolderId);
+  if (!dest) throw new Error('unknown folder');
+  if (!fs.existsSync(dest.path)) throw new Error(`${labelFor(dest)} is unavailable`);
+  const res = await copyItemsInto(dest.path, items, dest.id);
+  return { folder: { id: dest.id, path: dest.path, label: labelFor(dest) }, ...res };
+}
+
 // ------- settings -------
 
 function configPath() {
@@ -369,6 +438,40 @@ function registerIpc() {
   ipcMain.handle('vibes:folders:setActive', (_e, { id }) => {
     setActiveFolder(id);
     return { ok: true, activeFolderId: ACTIVE_FOLDER_ID };
+  });
+
+  ipcMain.handle('vibes:collection:createFolder', async (e, { items }) => {
+    if (!Array.isArray(items) || items.length === 0) throw new Error('collection is empty');
+
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const current = activeFolder();
+    const parent = current ? path.dirname(current.path) : app.getPath('home');
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Create folder from collection',
+      defaultPath: path.join(parent, 'collection'),
+      buttonLabel: 'Create',
+      nameFieldLabel: 'Folder name:',
+      properties: ['createDirectory'],
+    });
+    if (result.canceled || !result.filePath) return null;
+
+    const { folder, copied, skipped, alreadyThere } = await createFolderFromCollection(
+      result.filePath,
+      items,
+    );
+    return {
+      folder: { id: folder.id, path: folder.path, label: labelFor(folder) },
+      copied,
+      skipped,
+      alreadyThere,
+      ...describeFolders(),
+    };
+  });
+
+  ipcMain.handle('vibes:collection:copyTo', async (_e, { items, folderId }) => {
+    if (!Array.isArray(items) || items.length === 0) throw new Error('collection is empty');
+    const res = await copyCollectionInto(folderId, items);
+    return { ...res, ...describeFolders() };
   });
 }
 
